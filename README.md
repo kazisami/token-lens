@@ -45,8 +45,8 @@ Instead of treating LLM text generation as an opaque black box, TokenLens expose
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/<your-username>/tokenlens.git
-   cd tokenlens
+   git clone https://github.com/kazisami/token-lens.git
+   cd token-lens
    ```
 
 2. **Install dependencies**:
