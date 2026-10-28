@@ -15,16 +15,13 @@ import {
   Thermometer,
   Layers,
   ChevronDown,
-  X,
-  Calculator,
-  CornerDownLeft,
-  Flame,
   Zap,
+  CornerDownRight,
 } from 'lucide-react';
 
 export default function App() {
-  const [prompt, setPrompt] = useState<string>('The capital of France is');
-  const [analyzedPrompt, setAnalyzedPrompt] = useState<string>('The capital of France is');
+  const [prompt, setPrompt] = useState<string>('The capital of France is ');
+  const [analyzedPrompt, setAnalyzedPrompt] = useState<string>('The capital of France is ');
   const [steps, setSteps] = useState<TokenStep[]>([]);
   const [modelUsed, setModelUsed] = useState<string>('gemini-2.5-flash');
   const [durationMs, setDurationMs] = useState<number | null>(null);
@@ -39,16 +36,9 @@ export default function App() {
   // Popover state for 3 param buttons
   const [openParam, setOpenParam] = useState<'tokens' | 'temp' | 'topK' | null>(null);
 
-  // Hovered token for tooltip & inspection
+  // Hovered token index for alternatives popover
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-
-  // Log-prob modal data
-  const [logProbModalData, setLogProbModalData] = useState<{
-    token: string;
-    logProbability: number;
-    probability: number;
-    stepIndex?: number;
-  } | null>(null);
+  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Refs for closing popovers on outside click
   const paramBarRef = useRef<HTMLDivElement>(null);
@@ -63,13 +53,14 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Fetch token probabilities
+  // Fetch token probabilities from Gemini API
   const fetchResponse = async (textToAnalyze?: string) => {
-    const text = (textToAnalyze !== undefined ? textToAnalyze : prompt).trim();
-    if (!text) return;
+    const text = textToAnalyze !== undefined ? textToAnalyze : prompt;
+    if (!text.trim()) return;
 
     setAnalyzedPrompt(text);
     setOpenParam(null);
+    setHoveredIdx(null);
     setIsLoading(true);
     setError(null);
 
@@ -108,11 +99,24 @@ export default function App() {
 
   // Initial load
   useEffect(() => {
-    fetchResponse('The capital of France is');
+    fetchResponse('The capital of France is ');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Helper color styling according to confidence level
+  // Branch and regenerate upon selecting a token (original or alternative)
+  const handleSelectToken = (stepIndex: number, chosenTokenString: string) => {
+    // Collect all tokens strictly before this step (0 up to stepIndex - 1)
+    const priorTokens = steps.slice(0, stepIndex).map((s) => s.selectedToken).join('');
+
+    // Construct new prompt: original analyzedPrompt + prior tokens + chosen token
+    const newPrompt = analyzedPrompt + priorTokens + chosenTokenString;
+
+    setPrompt(newPrompt);
+    setHoveredIdx(null);
+    fetchResponse(newPrompt);
+  };
+
+  // Helper styling for confidence level
   const getTokenConfidenceStyle = (p: number) => {
     if (p >= 0.8) {
       return {
@@ -150,6 +154,21 @@ export default function App() {
     };
   };
 
+  // Clean mouse enter / leave with small grace timeout so user can comfortably mouse into tooltip
+  const handleMouseEnter = (idx: number) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setHoveredIdx(idx);
+  };
+
+  const handleMouseLeave = () => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredIdx(null);
+    }, 250);
+  };
+
   return (
     <div className="min-h-screen bg-slate-50/80 bg-radial-glow text-slate-900 font-sans flex flex-col selection:bg-blue-500/20 selection:text-blue-900 relative overflow-x-hidden">
       {/* Subtle decorative glow circles in background */}
@@ -168,7 +187,7 @@ export default function App() {
                   TokenLens
                 </h1>
                 <span className="text-[10px] font-bold font-mono tracking-wider uppercase px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200/60">
-                  Live Probabilities
+                  Interactive Token Stream
                 </span>
               </div>
             </div>
@@ -222,7 +241,7 @@ export default function App() {
                   }
                 }}
                 rows={4}
-                placeholder="Enter your prompt here (e.g., 'The capital of France is')..."
+                placeholder="Enter your prompt here (e.g., 'The capital of France is ')..."
                 className="w-full bg-transparent text-slate-900 placeholder-slate-400 text-base font-mono resize-none focus:outline-none leading-relaxed transition-colors"
               />
             </div>
@@ -540,7 +559,7 @@ export default function App() {
                 <Zap className="w-3.5 h-3.5 text-amber-500" />
                 <span>Token Stream</span>
                 <span className="text-slate-300">/</span>
-                <span className="text-slate-400 font-normal">{steps.length} generated</span>
+                <span className="text-slate-400 font-normal">Hover to explore alternatives · Click any to branch</span>
               </div>
 
               <div className="flex items-center gap-2 text-[11px] font-mono">
@@ -569,98 +588,104 @@ export default function App() {
 
               {/* Color-coded Generated Tokens */}
               {steps.map((step, idx) => {
-                const pct = (step.selectedProbability * 100).toFixed(1);
                 const style = getTokenConfidenceStyle(step.selectedProbability);
                 const isHovered = hoveredIdx === idx;
+
+                // Build full list of alternatives including original selected token
+                const candidates = step.topCandidates && step.topCandidates.length > 0
+                  ? step.topCandidates
+                  : [{ token: step.selectedToken, probability: step.selectedProbability, logProbability: step.selectedLogProb }];
 
                 return (
                   <div
                     key={step.stepIndex}
                     className="relative inline-block"
-                    onMouseEnter={() => setHoveredIdx(idx)}
-                    onMouseLeave={() => setHoveredIdx(null)}
+                    onMouseEnter={() => handleMouseEnter(idx)}
+                    onMouseLeave={handleMouseLeave}
                   >
+                    {/* Primary Token Button */}
                     <button
                       type="button"
-                      onClick={() =>
-                        setLogProbModalData({
-                          token: step.selectedToken,
-                          logProbability: step.selectedLogProb,
-                          probability: step.selectedProbability,
-                          stepIndex: step.stepIndex,
-                        })
-                      }
+                      onClick={() => handleSelectToken(idx, step.selectedToken)}
+                      title="Click to branch prompt up to this token"
                       className={`group relative px-2.5 py-1 rounded-xl border text-sm font-bold transition-all duration-150 cursor-pointer shadow-xs ${style.bg} ${
                         isHovered
-                          ? 'scale-110 z-20 ring-2 ring-blue-500/50 shadow-md'
+                          ? 'scale-110 z-30 ring-2 ring-blue-500/60 shadow-md shadow-blue-500/20'
                           : 'hover:scale-105'
                       }`}
                     >
-                      {/* Token Text with readable whitespace indicators */}
+                      {/* Token Text with readable whitespace indicator */}
                       {step.selectedToken === '\n' ? (
-                        <span className="text-slate-400">↵</span>
+                        <span className="text-slate-400 font-sans">↵</span>
                       ) : (
                         <span>{step.selectedToken}</span>
                       )}
                     </button>
 
-                    {/* LIVELY HOVER TOOLTIP SHOWING EXACT PERCENTAGE & CANDIDATES */}
+                    {/* INTERACTIVE ALTERNATIVES POPOVER ON HOVER */}
                     {isHovered && (
-                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-3 w-60 bg-slate-900/95 backdrop-blur-md text-white rounded-2xl shadow-2xl p-3.5 z-50 text-xs font-sans pointer-events-none animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-150 border border-slate-700/80">
-                        {/* Tooltip Header */}
+                      <div
+                        className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2.5 w-64 bg-slate-900/95 backdrop-blur-md text-white rounded-2xl shadow-2xl p-3 z-50 text-xs font-sans animate-in fade-in zoom-in-95 slide-in-from-bottom-2 duration-150 border border-slate-700/80"
+                        onMouseEnter={() => handleMouseEnter(idx)}
+                        onMouseLeave={handleMouseLeave}
+                      >
+                        {/* Popover Header */}
                         <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2">
-                          <span className="font-mono font-bold text-sm text-blue-300">
-                            &quot;{step.selectedToken}&quot;
+                          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                            <CornerDownRight className="w-3 h-3 text-blue-400" />
+                            <span>Select Next Token</span>
                           </span>
-                          <span className={`text-[11px] font-mono px-2 py-0.5 rounded-md font-bold shadow-xs ${style.badge}`}>
-                            {pct}%
+                          <span className="text-[10px] font-mono text-slate-400">
+                            Step #{step.stepIndex}
                           </span>
                         </div>
 
-                        {/* Probability Progress Bar */}
-                        <div className="w-full bg-slate-800 rounded-full h-1.5 mb-2.5 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all duration-300 ${style.bar}`}
-                            style={{ width: `${Math.min(100, Math.max(5, step.selectedProbability * 100))}%` }}
-                          />
+                        {/* List of Clickable Tokens (Original + Top Alternatives) */}
+                        <div className="space-y-1.5 max-h-56 overflow-y-auto no-scrollbar">
+                          {candidates.map((cand, cIdx) => {
+                            const isChosenOne = cand.token === step.selectedToken;
+                            const candPct = (cand.probability * 100).toFixed(1);
+                            const candStyle = getTokenConfidenceStyle(cand.probability);
+
+                            return (
+                              <button
+                                key={cIdx}
+                                type="button"
+                                onClick={() => handleSelectToken(idx, cand.token)}
+                                className={`w-full group/item flex items-center justify-between p-2 rounded-xl transition-all duration-150 cursor-pointer text-left border ${
+                                  isChosenOne
+                                    ? 'bg-blue-600/25 border-blue-500/50 text-white hover:bg-blue-600/40'
+                                    : 'bg-slate-800/60 border-slate-700/50 hover:bg-slate-700/80 hover:border-slate-600 text-slate-200'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2 overflow-hidden pr-2">
+                                  <span
+                                    className={`w-2 h-2 rounded-full shrink-0 ${candStyle.dot}`}
+                                  />
+                                  <span className="font-mono text-xs font-bold truncate">
+                                    &quot;{cand.token}&quot;
+                                  </span>
+                                  {isChosenOne && (
+                                    <span className="text-[9px] font-mono font-semibold uppercase px-1 py-0.2 bg-blue-500/30 text-blue-300 rounded border border-blue-400/30">
+                                      current
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="font-mono text-[11px] font-bold text-slate-300 group-hover/item:text-white">
+                                    {candPct}%
+                                  </span>
+                                  <CornerDownRight className="w-3 h-3 text-slate-400 opacity-0 group-hover/item:opacity-100 group-hover/item:translate-x-0.5 transition-all" />
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
 
-                        {/* Step Details */}
-                        <div className="text-[11px] text-slate-300 space-y-1.5 font-mono">
-                          <div className="flex justify-between items-center">
-                            <span className="text-slate-400">Step:</span>
-                            <span className="text-slate-200 font-bold">#{step.stepIndex}</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <span className="text-slate-400">Log-Prob (ln P):</span>
-                            <span className="text-blue-200">{step.selectedLogProb.toFixed(3)}</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <span className="text-slate-400">Confidence:</span>
-                            <span className="text-slate-200 font-medium">{style.label}</span>
-                          </div>
-                        </div>
-
-                        {/* Top Alternatives considered by the model */}
-                        {step.topCandidates && step.topCandidates.length > 1 && (
-                          <div className="pt-2.5 mt-2.5 border-t border-slate-800 space-y-1.5">
-                            <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-semibold">
-                              Top Alternatives:
-                            </span>
-                            {step.topCandidates.slice(0, 3).map((c, cIdx) => (
-                              <div key={cIdx} className="flex justify-between items-center text-[11px] font-mono">
-                                <span className="text-slate-300">&quot;{c.token}&quot;</span>
-                                <span className="text-slate-400 font-semibold">
-                                  {(c.probability * 100).toFixed(1)}%
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        <div className="pt-2 mt-2 border-t border-slate-800/80 text-[10px] text-slate-400 text-center flex items-center justify-center gap-1">
-                          <Calculator className="w-2.5 h-2.5 text-blue-400" />
-                          <span>Click token to inspect math</span>
+                        {/* Popover Action Hint */}
+                        <div className="pt-2 mt-2 border-t border-slate-800 text-[10px] text-slate-400 text-center font-mono">
+                          Click to branch stream from here
                         </div>
                       </div>
                     )}
@@ -671,132 +696,6 @@ export default function App() {
           </div>
         )}
       </main>
-
-      {/* Log-Probability Explanation Modal */}
-      {logProbModalData && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200"
-          onClick={() => setLogProbModalData(null)}
-        >
-          <div
-            className="bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden transform transition-all animate-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-6 py-4.5 text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/20 rounded-xl backdrop-blur-xs shadow-inner">
-                  <Calculator className="w-5 h-5 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-base leading-tight">
-                    Understanding Log-Probability (ln P)
-                  </h3>
-                  <p className="text-xs text-blue-100 font-mono mt-0.5">
-                    Token: &quot;{logProbModalData.token}&quot; {logProbModalData.stepIndex ? `(Step #${logProbModalData.stepIndex})` : ''}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setLogProbModalData(null)}
-                className="p-1.5 rounded-xl text-white/80 hover:text-white hover:bg-white/20 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Content */}
-            <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-              {/* Values Highlight Grid */}
-              <div className="grid grid-cols-2 gap-3 p-4 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50/50 border border-blue-200/80 shadow-inner">
-                <div>
-                  <span className="text-xs text-blue-800 font-medium block">
-                    Log-Probability (ln P):
-                  </span>
-                  <span className="text-2xl font-black font-mono text-blue-950">
-                    {logProbModalData.logProbability.toFixed(4)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-xs text-blue-800 font-medium block">
-                    Actual Probability: P = e^(ln P)
-                  </span>
-                  <span className="text-2xl font-black font-mono text-blue-600">
-                    {(logProbModalData.probability * 100).toFixed(2)}%
-                  </span>
-                </div>
-              </div>
-
-              {/* The Analogy Section */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-blue-600" />
-                  <span>The Richter Scale / Volume Knob Analogy</span>
-                </h4>
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs text-slate-700 space-y-2.5 leading-relaxed">
-                  <p>
-                    Because probabilities multiply together across a sentence ($P_1 \times P_2 \times P_3$), numbers quickly shrink into astronomically tiny fractions like <code>0.000000000041</code> that computers cannot easily store without rounding errors (underflow).
-                  </p>
-                  <p>
-                    <strong>Log-probability</strong> turns multiplication into simple <em>addition</em>:
-                  </p>
-                  <div className="p-2.5 bg-white border border-slate-200 rounded-xl font-mono text-slate-800 text-[11px] shadow-2xs">
-                    ln(P₁ × P₂) = ln(P₁) + ln(P₂)
-                  </div>
-                  <p>
-                    Think of log-probability like the <strong>decibel scale</strong> for sound or the <strong>Richter scale</strong> for earthquakes:
-                  </p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    <li>
-                      <strong>0.00</strong> = 100% certainty ($e^0 = 1.0$).
-                    </li>
-                    <li>
-                      <strong>-0.69</strong> = 50% probability (a coin flip).
-                    </li>
-                    <li>
-                      <strong>-2.30</strong> = 10% probability (1 in 10 chance).
-                    </li>
-                    <li>
-                      <strong>-4.60</strong> = 1% probability (rare event).
-                    </li>
-                    <li>
-                      <strong>-9.21</strong> = 0.01% probability (very unusual token).
-                    </li>
-                  </ul>
-                </div>
-              </div>
-
-              {/* Intuitive Gauge for Current Token */}
-              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5 text-xs">
-                <span className="font-semibold text-slate-800 block">
-                  What does {logProbModalData.logProbability.toFixed(3)} mean for &quot;{logProbModalData.token}&quot;?
-                </span>
-                <p className="text-slate-600 leading-normal">
-                  {logProbModalData.probability >= 0.8
-                    ? `With ln P = ${logProbModalData.logProbability.toFixed(3)}, this token is virtually guaranteed (${(logProbModalData.probability * 100).toFixed(1)}%). The model has high conviction.`
-                    : logProbModalData.probability >= 0.3
-                    ? `With ln P = ${logProbModalData.logProbability.toFixed(3)}, this token is a top contender (${(logProbModalData.probability * 100).toFixed(1)}%), but other viable words compete closely.`
-                    : logProbModalData.probability >= 0.05
-                    ? `With ln P = ${logProbModalData.logProbability.toFixed(3)}, this is an alternative branch (${(logProbModalData.probability * 100).toFixed(1)}%) that might be picked under higher sampling temperatures.`
-                    : `With ln P = ${logProbModalData.logProbability.toFixed(3)}, this is a low-likelihood candidate (${(logProbModalData.probability * 100).toFixed(2)}%) representing a surprise or creative leap.`}
-                </p>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="bg-slate-50/80 px-6 py-3.5 border-t border-slate-200 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setLogProbModalData(null)}
-                className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs transition-colors cursor-pointer shadow-xs"
-              >
-                Got it
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
